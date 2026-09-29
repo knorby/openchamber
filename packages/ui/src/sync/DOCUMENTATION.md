@@ -124,13 +124,21 @@ second time `PROVIDER_REREAD_AFTER_CREDENTIAL_MS` after a credential change.
 
 | Kind | Sync child stores | Settings/composer stores (`stores/catalogRefresh.ts`) |
 |---|---|---|
-| `agent` | `agent` per directory | agents store + config-store agents |
+| `agent` | — | agents store + config-store agents |
 | `command` | `command` per directory | commands store |
 | `skill` | — | skills store + skills catalog |
 | `plugin` | — | plugins store |
-| `config` | `config` and `provider` per directory (plus `emitSyncConfigChanged`) | agents, commands, skills, MCP config, plugins, config-store providers |
-| `provider` / `model` / `credential` | `provider` per directory | config-store providers (model-metadata cache invalidated; the current list stays until the new one lands; `credential` reads twice) |
+| `config` | — | agents, commands, skills, MCP config, plugins, config-store providers |
+| `provider` / `model` / `credential` | — | config-store providers (model-metadata cache invalidated; the current list stays until the new one lands; `credential` reads twice) |
 | `project` | global project list | — |
+
+Catalog reloads deliberately never fan reads out per directory. In OpenCode 2.x
+a directory-scoped config or provider read initializes that directory's
+location, and the location's MCP reconcile starts every enabled server, so a
+reload that touched every sidebar-visible project spawned one MCP fleet per
+project at startup (#4018). Child stores keep their `config` and `provider`
+slices only from actual directory initialization (bootstrap), which is also the
+only place `emitSyncConfigChanged` fires.
 
 ## Compaction records
 

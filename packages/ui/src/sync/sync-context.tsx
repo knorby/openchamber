@@ -44,7 +44,7 @@ import { countSyncPerformance } from "./performance-diagnostics"
 import { runBackgroundNetworkTask } from "@/lib/background-network"
 import { recordDirectoryRecoveryEvent } from "./directory-recovery-snapshots"
 import { setActionRefs } from "./session-actions"
-import { setSyncRefs, getAllSyncSessions, emitSyncConfigChanged, getDirectoryState } from "./sync-refs"
+import { setSyncRefs, getAllSyncSessions, getDirectoryState } from "./sync-refs"
 import { useSessionUIStore } from "./session-ui-store"
 import { stripSessionDiffSnapshots } from "./sanitize"
 import { upsertSessionRecord } from "./session-records"
@@ -1484,14 +1484,17 @@ async function resyncDirectoryAfterReconnect(
 /**
  * OpenCode reports a catalog change (`config.updated`, `agent.updated`, ...)
  * without saying what changed, so the affected slice is re-read rather than
- * patched. Agents, commands, config and providers resolve per directory, so
- * every open directory refreshes its own copy; projects are global.
+ * patched. Projects are global; everything else resolves per directory and is
+ * re-read when that directory is actually initialized.
  *
- * The sync stores only hold what chat needs; the Settings lists and the
- * composer read their own stores, which `refreshStoresForCatalogKind` re-reads
- * for the same kind.
+ * In OpenCode 2.x a directory-scoped config or provider read initializes that
+ * directory's location, and the location's MCP reconcile starts every enabled
+ * server, so a reload must never fan reads out across every child store: with
+ * one per sidebar-visible project it spawned a full MCP fleet per project at
+ * startup (#4018). The Settings lists and the composer read their own stores,
+ * which `refreshStoresForCatalogKind` re-reads for the same kind.
  */
-async function reloadCatalog(kind: CatalogKind, childStores: ChildStoreManager): Promise<void> {
+async function reloadCatalog(kind: CatalogKind): Promise<void> {
   // Before anything re-reads: a fresh GET must not be served the config the
   // client cached seconds ago.
   if (kind === "config") opencodeClient.clearConfigCache()
@@ -1501,37 +1504,7 @@ async function reloadCatalog(kind: CatalogKind, childStores: ChildStoreManager):
   if (kind === "project") {
     const projects = await opencodeClient.listProjects().catch(() => null)
     if (projects) useGlobalSyncStore.getState().actions.set({ projects })
-    return
   }
-  // No sync-store slice of their own: their consumers read them on demand.
-  if (kind === "skill" || kind === "plugin" || kind === "websearch") return
-
-  await Promise.all([...childStores.children.entries()].map(async ([directory, store]) => {
-    try {
-      if (kind === "agent") {
-        store.setState({ agent: await opencodeClient.listAgents(directory) })
-      } else if (kind !== "command") {
-        // Commands have no sync-store slice: `refreshStoresForCatalogKind`
-        // re-reads `useCommandsStore`, the only consumer, on demand.
-        if (kind === "config") {
-          const config = await opencodeClient.getConfig(directory)
-          store.setState({ config })
-          emitSyncConfigChanged(directory, config)
-        }
-        // The provider slice follows everything that can change it:
-        // `provider.updated` / `model.updated` (2.0.8's own announcements), a
-        // credential change, and the config (which can declare providers).
-        const provider = await opencodeClient.getProvidersForConfig(directory)
-        // Same catalog, same object: a re-read that changes nothing must not
-        // re-render every provider consumer.
-        if (JSON.stringify(store.getState().provider) !== JSON.stringify(provider)) {
-          store.setState({ provider })
-        }
-      }
-    } catch {
-      // Best-effort: the next catalog event or bootstrap re-reads it.
-    }
-  }))
 }
 
 /**
@@ -1544,14 +1517,14 @@ const CATALOG_RELOAD_DEBOUNCE_MS = 250
 const pendingCatalogKinds = new Set<CatalogKind>()
 let catalogReloadTimer: ReturnType<typeof setTimeout> | null = null
 
-function scheduleCatalogReload(kind: CatalogKind, childStores: ChildStoreManager): void {
+function scheduleCatalogReload(kind: CatalogKind): void {
   pendingCatalogKinds.add(kind)
   if (catalogReloadTimer) clearTimeout(catalogReloadTimer)
   catalogReloadTimer = setTimeout(() => {
     catalogReloadTimer = null
     const kinds = [...pendingCatalogKinds]
     pendingCatalogKinds.clear()
-    for (const pending of kinds) void reloadCatalog(pending, childStores)
+    for (const pending of kinds) void reloadCatalog(pending)
   }, CATALOG_RELOAD_DEBOUNCE_MS)
 }
 
@@ -1766,7 +1739,7 @@ export function handleEvent(
         useGlobalSyncStore.setState({ reload: "pending" })
       }
     } else if (result.type === "catalog") {
-      scheduleCatalogReload(result.kind, childStores)
+      scheduleCatalogReload(result.kind)
     }
     // On server.connected, re-bootstrap all directories
     // but only if not during recent boot
@@ -1816,7 +1789,7 @@ export function handleEvent(
     if (result?.type === "refresh") {
       useGlobalSyncStore.setState({ reload: "pending" })
     } else if (result?.type === "catalog") {
-      scheduleCatalogReload(result.kind, childStores)
+      scheduleCatalogReload(result.kind)
     }
     return
   }
