@@ -130,7 +130,7 @@ second time `PROVIDER_REREAD_AFTER_CREDENTIAL_MS` after a credential change.
 | `command` | `command` per directory | commands store |
 | `skill` | — | skills store + skills catalog |
 | `plugin` | — | plugins store |
-| `config` | — | agents, commands, skills, MCP config, plugins, config-store providers |
+| `config` | `config` for one directory: the event's, else the active one | agents, commands, skills, MCP config, plugins, config-store providers |
 | `provider` / `model` / `credential` | — | config-store providers (model-metadata cache invalidated; the current list stays until the new one lands; `credential` reads twice) |
 | `project` | global project list | — |
 
@@ -138,9 +138,17 @@ Catalog reloads deliberately never fan reads out per directory. In OpenCode 2.x
 a directory-scoped config or provider read initializes that directory's
 location, and the location's MCP reconcile starts every enabled server, so a
 reload that touched every sidebar-visible project spawned one MCP fleet per
-project at startup (#4018). Child stores keep their `config` and `provider`
-slices only from actual directory initialization (bootstrap), which is also the
-only place `emitSyncConfigChanged` fires.
+project at startup (#4018). A `config` reload re-reads exactly one directory:
+the one the event names, else the active one. The event's location published
+the event, so reading it cannot spawn anything; the active directory is the
+one the user is looking at. The fresh config is handed to
+`emitSyncConfigChanged`, whose listeners (for example
+`applyOpenCodeConfigDefaults`) keep composer defaults live for that
+directory. Child stores keep their `config` slice from actual directory
+initialization (bootstrap) and these single-directory refreshes; `bootstrap`
+remains the only other place `emitSyncConfigChanged` fires. The child stores
+carry no `agent` or `provider` slices at all: nothing read them once the
+fan-out was gone, so they were removed.
 
 ## Compaction records
 

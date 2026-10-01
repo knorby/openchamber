@@ -60,6 +60,11 @@ export function getDirectoryState(directory?: string): State | undefined {
   return stores.getState(dir)
 }
 
+/** Read the active directory as set by the mounted SyncProvider. Empty before mount. */
+export function getSyncActiveDirectory(): string {
+  return _directory
+}
+
 /** Read resolved OpenCode config from a directory child store, if bootstrapped. */
 export function getSyncConfig(directory?: string): Config | undefined {
   const config = getDirectoryState(directory)?.config

@@ -45,7 +45,7 @@ import { countSyncPerformance } from "./performance-diagnostics"
 import { runBackgroundNetworkTask } from "@/lib/background-network"
 import { recordDirectoryRecoveryEvent } from "./directory-recovery-snapshots"
 import { setActionRefs } from "./session-actions"
-import { setSyncRefs, getAllSyncSessions, getDirectoryState } from "./sync-refs"
+import { setSyncRefs, getAllSyncSessions, getDirectoryState, getSyncActiveDirectory, getSyncChildStores, emitSyncConfigChanged } from "./sync-refs"
 import { useSessionUIStore } from "./session-ui-store"
 import { stripSessionDiffSnapshots } from "./sanitize"
 import { upsertSessionRecord } from "./session-records"
@@ -1478,17 +1478,22 @@ async function resyncDirectoryAfterReconnect(
 /**
  * OpenCode reports a catalog change (`config.updated`, `agent.updated`, ...)
  * without saying what changed, so the affected slice is re-read rather than
- * patched. Projects are global; everything else resolves per directory and is
- * re-read when that directory is actually initialized.
+ * patched. Projects are global; everything else is refreshed in the global
+ * settings/composer stores, which `refreshStoresForCatalogKind` re-reads for
+ * the same kind.
  *
  * In OpenCode 2.x a directory-scoped config or provider read initializes that
  * directory's location, and the location's MCP reconcile starts every enabled
  * server, so a reload must never fan reads out across every child store: with
  * one per sidebar-visible project it spawned a full MCP fleet per project at
- * startup (#4018). The Settings lists and the composer read their own stores,
- * which `refreshStoresForCatalogKind` re-reads for the same kind.
+ * startup (#4018). Config keeps its live-apply path with exactly one read:
+ * the directory the event names, else the active directory. The event's
+ * location is alive by construction (it published the event), and the active
+ * directory is the one the user is looking at, so neither read can spawn a
+ * new fleet; the fresh config is handed to `emitSyncConfigChanged`, whose
+ * listeners apply composer defaults (`applyOpenCodeConfigDefaults`).
  */
-async function reloadCatalog(kind: CatalogKind): Promise<void> {
+async function reloadCatalog(kind: CatalogKind, directory: string | null): Promise<void> {
   // Before anything re-reads: a fresh GET must not be served the config the
   // client cached seconds ago.
   if (kind === "config") opencodeClient.clearConfigCache()
@@ -1499,6 +1504,19 @@ async function reloadCatalog(kind: CatalogKind): Promise<void> {
     const projects = await opencodeClient.listProjects().catch(() => null)
     if (projects) useGlobalSyncStore.getState().actions.set({ projects })
   }
+
+  if (kind === "config") {
+    const target = directory ?? getSyncActiveDirectory()
+    if (target) {
+      try {
+        const config = await opencodeClient.getConfig(target)
+        if (getDirectoryState(target)) getSyncChildStores().getChild(target)?.setState({ config })
+        emitSyncConfigChanged(target, config)
+      } catch {
+        // Best-effort: the next catalog event or bootstrap re-reads it.
+      }
+    }
+  }
 }
 
 /**
@@ -1508,20 +1526,22 @@ async function reloadCatalog(kind: CatalogKind): Promise<void> {
  * the same kind anyway.
  */
 const CATALOG_RELOAD_DEBOUNCE_MS = 250
-const pendingCatalogKinds = new Set<CatalogKind>()
+const pendingCatalogKinds = new Map<CatalogKind, string | null>()
 let catalogReloadTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleCatalogReload(kind: CatalogKind, directory: string | null): void {
   // The reload re-reads the active directory's lists only; the directory the
   // event names loses its fresh mark now, so switching to it re-reads.
   markConfigCatalogStale(kind, directory)
-  pendingCatalogKinds.add(kind)
+  // Same catalog, same kind: a later event supersedes an earlier one, so the
+  // last directory a burst names wins.
+  pendingCatalogKinds.set(kind, directory)
   if (catalogReloadTimer) clearTimeout(catalogReloadTimer)
   catalogReloadTimer = setTimeout(() => {
     catalogReloadTimer = null
-    const kinds = [...pendingCatalogKinds]
+    const kinds = [...pendingCatalogKinds.entries()]
     pendingCatalogKinds.clear()
-    for (const pending of kinds) void reloadCatalog(pending)
+    for (const [pending, pendingDirectory] of kinds) void reloadCatalog(pending, pendingDirectory)
   }, CATALOG_RELOAD_DEBOUNCE_MS)
 }
 
