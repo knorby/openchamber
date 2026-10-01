@@ -1499,36 +1499,6 @@ async function reloadCatalog(kind: CatalogKind): Promise<void> {
     const projects = await opencodeClient.listProjects().catch(() => null)
     if (projects) useGlobalSyncStore.getState().actions.set({ projects })
   }
-  // No sync-store slice of their own: their consumers read them on demand.
-  if (kind === "skill" || kind === "plugin" || kind === "websearch") return
-
-  await Promise.all([...childStores.children.entries()].map(async ([directory, store]) => {
-    try {
-      if (kind === "agent") {
-        store.setState({ agent: await opencodeClient.listAgents(directory) })
-      } else if (kind !== "command") {
-        // Commands have no sync-store slice: `refreshStoresForCatalogKind`
-        // re-reads `useCommandsStore`, the only consumer, on demand.
-        if (kind === "config") {
-          const config = await opencodeClient.getConfig(directory)
-          store.setState({ config })
-          emitSyncConfigChanged(directory, config)
-        }
-        // The provider slice follows everything that can change it:
-        // `provider.updated` / `model.updated` (2.0.8's own announcements), a
-        // credential change, and the config (which can declare providers).
-        // Fresh: a read already in flight may predate the change.
-        const provider = await opencodeClient.getProvidersForConfig(directory, { fresh: true })
-        // Same catalog, same object: a re-read that changes nothing must not
-        // re-render every provider consumer.
-        if (JSON.stringify(store.getState().provider) !== JSON.stringify(provider)) {
-          store.setState({ provider })
-        }
-      }
-    } catch {
-      // Best-effort: the next catalog event or bootstrap re-reads it.
-    }
-  }))
 }
 
 /**
@@ -1541,7 +1511,7 @@ const CATALOG_RELOAD_DEBOUNCE_MS = 250
 const pendingCatalogKinds = new Set<CatalogKind>()
 let catalogReloadTimer: ReturnType<typeof setTimeout> | null = null
 
-function scheduleCatalogReload(kind: CatalogKind, childStores: ChildStoreManager, directory: string | null): void {
+function scheduleCatalogReload(kind: CatalogKind, directory: string | null): void {
   // The reload re-reads the active directory's lists only; the directory the
   // event names loses its fresh mark now, so switching to it re-reads.
   markConfigCatalogStale(kind, directory)
@@ -1768,7 +1738,7 @@ export function handleEvent(
         useGlobalSyncStore.setState({ reload: "pending" })
       }
     } else if (result.type === "catalog") {
-      scheduleCatalogReload(result.kind, childStores, null)
+      scheduleCatalogReload(result.kind, null)
     }
     // On server.connected, re-bootstrap all directories
     // but only if not during recent boot
@@ -1825,7 +1795,7 @@ export function handleEvent(
     if (result?.type === "refresh") {
       useGlobalSyncStore.setState({ reload: "pending" })
     } else if (result?.type === "catalog") {
-      scheduleCatalogReload(result.kind, childStores, directory)
+      scheduleCatalogReload(result.kind, directory)
     }
     return
   }
@@ -1989,7 +1959,7 @@ export function handleEvent(
   // A catalog event names the location it was rebuilt in; for an open
   // directory it lands here rather than in the global branch above.
   const reducerResult = applyDirectoryEvent(draft, payload, {
-    onCatalogUpdated: (kind) => scheduleCatalogReload(kind, childStores, resolvedDirectory),
+    onCatalogUpdated: (kind) => scheduleCatalogReload(kind, resolvedDirectory),
   })
   const reducerChanged = typeof reducerResult === "boolean" ? reducerResult : reducerResult.changed
   const materializationResult = typeof reducerResult === "boolean" ? undefined : reducerResult.materialization
