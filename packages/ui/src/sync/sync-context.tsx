@@ -1530,8 +1530,10 @@ const pendingCatalogKinds = new Map<CatalogKind, string | null>()
 let catalogReloadTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleCatalogReload(kind: CatalogKind, directory: string | null): void {
-  // The reload re-reads the active directory's lists only; the directory the
-  // event names loses its fresh mark now, so switching to it re-reads.
+  // List kinds re-read the active directory's stores only, so the directory
+  // the event names just loses its fresh mark: switching to it re-reads.
+  // Config is the exception: its reload re-reads exactly the directory the
+  // event names (else the active one); see reloadCatalog.
   markConfigCatalogStale(kind, directory)
   // Same catalog, same kind: a later event supersedes an earlier one, so the
   // last directory a burst names wins.
