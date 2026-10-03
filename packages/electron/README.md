@@ -58,6 +58,8 @@ for the launch paths, controlled reproductions, and Windows validation limits.
 
 Same-origin session-chat iframes complete an authenticated parent-frame handshake before creating their SDK client. The parent supplies its active in-memory endpoint and credentials; when relay is active it also supplies the public relay descriptor without any pairing grant, because Electron preload and IPC are unavailable inside the iframe. The iframe establishes its own transport and rebinds its SDK before rendering. Additional windows retain their own per-window runtime bootstrap instead of being overwritten by the main window. Credentials are never placed in iframe URLs, and other child pages do not receive this runtime state.
 
+The HTML file preview runs in a sandboxed iframe without `allow-same-origin`, so it has an opaque origin like an extension frame. The desktop navigation guard lets the main app frame load `/api/fs/preview/<grant>/…` into an empty direct child, or reload a preview child with a new grant after the file is saved, and lets the preview follow its own links between pages of the same grant. A preview cannot reach another grant or any other route, and loaded extension frames and their children cannot navigate to a preview.
+
 The preload bridge exposes desktop-only APIs to the web UI through `window.__OPENCHAMBER_DESKTOP__`. Privileged commands are checked in `main.mjs`, not only in the UI.
 
 The compatibility gate can reuse the embedded managed OpenCode CLI preflight
@@ -207,6 +209,7 @@ Packaged Desktop builds include the official OpenCode CLI release pinned by `ope
 
 Managed local Desktop startup prefers OpenCode binaries in this order:
 
+0. `opencodeBinary` in the machine policy file, when an administrator pinned one. It has no fallback: an unusable pin stops startup instead of trying the entries below (see `packages/web/server/lib/enterprise-mode.js`).
 1. `settings.opencodeBinary`.
 2. Environment overrides: `OPENCODE_BINARY`, `OPENCODE_PATH`, `OPENCHAMBER_OPENCODE_PATH`, or `OPENCHAMBER_OPENCODE_BIN`.
 3. The bundled Desktop CLI in `process.resourcesPath/opencode-cli`.
